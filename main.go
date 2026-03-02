@@ -2,6 +2,7 @@ package gocher
 
 import (
 	"fmt"
+	"hash/fnv"
 	"sync"
 )
 
@@ -54,6 +55,18 @@ func (sc *ShardedCache) shardWorker(shard *Shard) {
 		req.fn(shard.Cache)
 	}
 }
+
+func HashKey(key string) uint32 {
+	h := fnv.New32a()
+	h.Write([]byte(key))
+	return h.Sum32()
+}
+
+func (sc *ShardedCache) getShard(key string) *Shard {
+	hash := HashKey(key)
+	return sc.shards[hash&(ShardsCount-1)]
+}
+
 func NewCache() *Cache {
 	return &Cache{data: make(map[string]*Object)}
 }
@@ -147,4 +160,110 @@ func (c *Cache) Delete(key string) bool {
 		delete(c.data, key)
 	}
 	return exists
+}
+
+func (sc *ShardedCache) ShardSet(key, value string) {
+	shard := sc.getShard(key)
+	shard.reqch <- request{
+		fn: func(c *Cache) {
+			c.Set(key, value)
+		},
+	}
+}
+
+func (sc *ShardedCache) ShardGet(key string) (string, bool, error) {
+	shard := sc.getShard(key)
+	resultCh := make(chan struct {
+		val string
+		ok  bool
+		err error
+	}, 1)
+
+	shard.reqch <- request{
+		fn: func(c *Cache) {
+			val, ok, err := c.Get(key)
+			resultCh <- struct {
+				val string
+				ok  bool
+				err error
+			}{val, ok, err}
+		},
+	}
+
+	res := <-resultCh
+	return res.val, res.ok, res.err
+}
+
+func (sc *ShardedCache) ShardHSet(key, field, value string) error {
+	shard := sc.getShard(key)
+	errCh := make(chan error, 1)
+
+	shard.reqch <- request{
+		fn: func(c *Cache) {
+			err := c.HSet(key, field, value)
+			errCh <- err
+		},
+	}
+
+	return <-errCh
+}
+
+func (sc *ShardedCache) ShardHGet(key, field string) (string, bool, error) {
+	shard := sc.getShard(key)
+	resultCh := make(chan struct {
+		val string
+		ok  bool
+		err error
+	}, 1)
+
+	shard.reqch <- request{
+		fn: func(c *Cache) {
+			val, ok, err := c.HGet(key, field)
+			resultCh <- struct {
+				val string
+				ok  bool
+				err error
+			}{val, ok, err}
+		},
+	}
+
+	res := <-resultCh
+	return res.val, res.ok, res.err
+}
+
+func (sc *ShardedCache) ShardHGetAll(key string) (map[string]string, bool, error) {
+	shard := sc.getShard(key)
+	resultCh := make(chan struct {
+		val map[string]string
+		ok  bool
+		err error
+	}, 1)
+
+	shard.reqch <- request{
+		fn: func(c *Cache) {
+			val, ok, err := c.HGetAll(key)
+			resultCh <- struct {
+				val map[string]string
+				ok  bool
+				err error
+			}{val, ok, err}
+		},
+	}
+
+	res := <-resultCh
+	return res.val, res.ok, res.err
+}
+
+func (sc *ShardedCache) ShardDelete(key string) bool {
+	shard := sc.getShard(key)
+	resultCh := make(chan bool, 1)
+
+	shard.reqch <- request{
+		fn: func(c *Cache) {
+			deleted := c.Delete(key)
+			resultCh <- deleted
+		},
+	}
+
+	return <-resultCh
 }
