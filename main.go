@@ -2,6 +2,7 @@ package gocher
 
 import (
 	"fmt"
+	"sync"
 )
 
 type ObjectType int
@@ -19,6 +20,7 @@ type Object struct {
 
 type Cache struct {
 	data map[string]*Object
+	mu   sync.RWMutex
 }
 
 func NewCache() *Cache {
@@ -26,6 +28,8 @@ func NewCache() *Cache {
 }
 
 func (c *Cache) Set(key, value string) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
 	c.data[key] = &Object{
 		Type:  StringType,
 		Value: value,
@@ -33,6 +37,8 @@ func (c *Cache) Set(key, value string) {
 }
 
 func (c *Cache) Get(key string) (string, bool, error) {
+	c.mu.RLock()
+	defer c.mu.RUnlock()
 	obj, exists := c.data[key]
 	if !exists {
 		return "", false, nil
@@ -46,6 +52,8 @@ func (c *Cache) Get(key string) (string, bool, error) {
 }
 
 func (c *Cache) HSet(key, field, value string) error {
+	c.mu.Lock()
+	defer c.mu.Unlock()
 	obj, exists := c.data[key]
 
 	if !exists {
@@ -69,6 +77,8 @@ func (c *Cache) HSet(key, field, value string) error {
 }
 
 func (c *Cache) HGet(key, field string) (string, bool, error) {
+	c.mu.RLock()
+	defer c.mu.RUnlock()
 	obj, exists := c.data[key]
 	if !exists {
 		return "", false, nil
@@ -84,6 +94,8 @@ func (c *Cache) HGet(key, field string) (string, bool, error) {
 }
 
 func (c *Cache) HGetAll(key string) (map[string]string, bool, error) {
+	c.mu.RLock()
+	defer c.mu.RUnlock()
 	obj, exists := c.data[key]
 	if !exists {
 		return nil, false, nil
@@ -97,6 +109,8 @@ func (c *Cache) HGetAll(key string) (map[string]string, bool, error) {
 }
 
 func (c *Cache) Delete(key string) bool {
+	c.mu.Lock()
+	defer c.mu.Unlock()
 	_, exists := c.data[key]
 	if exists {
 		delete(c.data, key)
