@@ -1,5 +1,18 @@
 package gocher
 
+type ObjectType int
+
+// idk if we need more types than string and hash, but we can add more later if we want, everything at the end is just bytes nothing much we care
+const (
+	StringType ObjectType = iota
+	HashType
+)
+
+type Object struct {
+	Type  ObjectType
+	Value interface{}
+}
+
 type Cache struct {
 	data map[string]string
 }
