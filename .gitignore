@@ -28,6 +28,7 @@ gocher
 # env file
 .env
 
+bigcache-bench/
 # Editor/IDE
 # .idea/
 # .vscode/
