@@ -1,6 +1,4 @@
-package main
-
-import "fmt"
+package gocher
 
 type Cache struct {
 	data map[string]string
@@ -25,25 +23,4 @@ func (c *Cache) Delete(key string) bool {
 		delete(c.data, key)
 	}
 	return ok
-}
-
-func main() {
-	cache := NewCache()
-
-	cache.Set("user:1", "alice")
-	fmt.Println("SET user:1 alice")
-
-	if value, ok := cache.Get("user:1"); ok {
-		fmt.Printf("GET user:1 -> hit (%s)\n", value)
-	} else {
-		fmt.Println("GET user:1 -> miss")
-	}
-
-	fmt.Printf("DELETE user:1 -> %t\n", cache.Delete("user:1"))
-
-	if value, ok := cache.Get("user:1"); ok {
-		fmt.Printf("GET user:1 -> hit (%s)\n", value)
-	} else {
-		fmt.Println("GET user:1 -> miss")
-	}
 }
