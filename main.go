@@ -7,6 +7,8 @@ import (
 
 type ObjectType int
 
+const ShardsCount = 16
+
 // idk if we need more types than string and hash, but we can add more later if we want, everything at the end is just bytes nothing much we care
 const (
 	StringType ObjectType = iota
@@ -23,6 +25,35 @@ type Cache struct {
 	mu   sync.RWMutex
 }
 
+type request struct {
+	fn func(c *Cache)
+}
+type Shard struct {
+	Cache *Cache
+	reqch chan request
+}
+
+type ShardedCache struct {
+	shards [ShardsCount]*Shard
+}
+
+func NewShardedCache() *ShardedCache {
+	sc := &ShardedCache{}
+	for i := range sc.shards {
+		sc.shards[i] = &Shard{
+			Cache: NewCache(),
+			reqch: make(chan request, 100), // buffered channel for requests
+		}
+		go sc.shardWorker(sc.shards[i])
+	}
+	return sc
+}
+
+func (sc *ShardedCache) shardWorker(shard *Shard) {
+	for req := range shard.reqch {
+		req.fn(shard.Cache)
+	}
+}
 func NewCache() *Cache {
 	return &Cache{data: make(map[string]*Object)}
 }
