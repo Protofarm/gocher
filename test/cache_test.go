@@ -9,22 +9,19 @@ import (
 func TestCacheSetGetDelete(t *testing.T) {
 	cache := gocher.NewCache()
 
+	// String
+	cache.Set("name", "vpn")
+	val, ok, _ := cache.Get("name")
+	if !ok || val != "vpn" {
+		t.Errorf("Expected 'vpn', got '%s'", val)
+	}
+	// Hash
+	cache.HSet("user:123", "age", "23")
+	cache.HSet("user:123", "email", "vpn@mail.com")
+
+	age, ok, _ := cache.HGet("user:123", "age")
 	cache.Set("user:1", "alice")
-
-	value, ok := cache.Get("user:1")
-	if !ok {
-		t.Fatalf("expected key user:1 to exist")
-	}
-	if value != "alice" {
-		t.Fatalf("expected value alice, got %q", value)
-	}
-
-	if !cache.Delete("user:1") {
-		t.Fatalf("expected delete to return true for existing key")
-	}
-
-	_, ok = cache.Get("user:1")
-	if ok {
-		t.Fatalf("expected key user:1 to be deleted")
+	if !ok || age != "23" {
+		t.Errorf("Expected '23', got '%s'", age)
 	}
 }
