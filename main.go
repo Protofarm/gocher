@@ -8,7 +8,7 @@ import (
 
 type ObjectType int
 
-const ShardsCount = 16
+const ShardsCount = 32
 
 // idk if we need more types than string and hash, but we can add more later if we want, everything at the end is just bytes nothing much we care
 const (
@@ -17,12 +17,13 @@ const (
 )
 
 type Object struct {
-	Type  ObjectType
-	Value interface{}
+	Type ObjectType
+	Str  string
+	Hash map[string]string
 }
 
 type Cache struct {
-	data map[string]*Object
+	data map[string]Object
 	mu   sync.RWMutex
 }
 
@@ -56,15 +57,16 @@ func (sc *ShardedCache) getShard(key string) *Shard {
 }
 
 func NewCache() *Cache {
-	return &Cache{data: make(map[string]*Object)}
+	return &Cache{data: make(map[string]Object, 100000)}
 }
 
 func (c *Cache) Set(key, value string) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
-	c.data[key] = &Object{
-		Type:  StringType,
-		Value: value,
+	c.data[key] = Object{
+		Type: StringType,
+		Str:  value,
+		Hash: nil,
 	}
 }
 
@@ -80,7 +82,7 @@ func (c *Cache) Get(key string) (string, bool, error) {
 		return "", false, fmt.Errorf("WRONGTYPE operation against a key holding wrong kind of value")
 	}
 
-	return obj.Value.(string), true, nil
+	return obj.Str, true, nil
 }
 
 func (c *Cache) HSet(key, field, value string) error {
@@ -92,9 +94,9 @@ func (c *Cache) HSet(key, field, value string) error {
 		hash := make(map[string]string)
 		hash[field] = value
 
-		c.data[key] = &Object{
-			Type:  HashType,
-			Value: hash,
+		c.data[key] = Object{
+			Type: HashType,
+			Hash: hash,
 		}
 		return nil
 	}
@@ -103,7 +105,7 @@ func (c *Cache) HSet(key, field, value string) error {
 		return fmt.Errorf("WRONGTYPE operation against a key holding wrong kind of value")
 	}
 
-	hash := obj.Value.(map[string]string)
+	hash := obj.Hash
 	hash[field] = value
 	return nil
 }
@@ -120,7 +122,7 @@ func (c *Cache) HGet(key, field string) (string, bool, error) {
 		return "", false, fmt.Errorf("WRONGTYPE operation against a key holding wrong kind of value")
 	}
 
-	hash := obj.Value.(map[string]string)
+	hash := obj.Hash
 	val, ok := hash[field]
 	return val, ok, nil
 }
@@ -137,7 +139,7 @@ func (c *Cache) HGetAll(key string) (map[string]string, bool, error) {
 		return nil, false, fmt.Errorf("WRONGTYPE operation against a key holding wrong kind of value")
 	}
 
-	return obj.Value.(map[string]string), true, nil
+	return obj.Hash, true, nil
 }
 
 func (c *Cache) Delete(key string) bool {
