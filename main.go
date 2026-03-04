@@ -2,6 +2,7 @@ package gocher
 
 import (
 	"fmt"
+	"time"
 
 	"github.com/alphadose/haxmap"
 	"github.com/cespare/xxhash/v2"
@@ -18,9 +19,10 @@ const (
 )
 
 type Object struct {
-	Type ObjectType
-	Str  string
-	Hash *haxmap.Map[string, string]
+	Type     ObjectType
+	Str      string
+	Hash     *haxmap.Map[string, string]
+	ExpireAt int64
 }
 
 type Cache struct {
@@ -70,16 +72,17 @@ func NewCache() *Cache {
 	return newCacheWithSize(32768)
 }
 
-func (c *Cache) setByHash(keyHash uint64, value string) {
+func (c *Cache) setByHash(keyHash uint64, value string, expiresAt int64) {
 	c.data.Set(keyHash, Object{
-		Type: StringType,
-		Str:  value,
-		Hash: nil,
+		Type:     StringType,
+		Str:      value,
+		Hash:     nil,
+		ExpireAt: expiresAt,
 	})
 }
 
-func (c *Cache) Set(key, value string) {
-	c.setByHash(hashKey64(key), value)
+func (c *Cache) Set(key, value string, expiresAt int64) {
+	c.setByHash(hashKey64(key), value, expiresAt)
 }
 
 func (c *Cache) getByHash(keyHash uint64) (string, bool, error) {
@@ -92,6 +95,10 @@ func (c *Cache) getByHash(keyHash uint64) (string, bool, error) {
 		return "", false, fmt.Errorf("WRONGTYPE operation against a key holding wrong kind of value")
 	}
 
+	if obj.ExpireAt != 0 && obj.ExpireAt <= time.Now().Unix() {
+		return "", false, fmt.Errorf("EXPIRED key has expired")
+	}
+
 	return obj.Str, true, nil
 }
 
@@ -99,13 +106,14 @@ func (c *Cache) Get(key string) (string, bool, error) {
 	return c.getByHash(hashKey64(key))
 }
 
-func (c *Cache) hSetByHash(keyHash uint64, field, value string) error {
+func (c *Cache) hSetByHash(keyHash uint64, field, value string, expiresAt int64) error {
 	newHashMap := haxmap.New[string, string]()
 	newHashMap.Set(field, value)
 
 	obj, loaded := c.data.GetOrSet(keyHash, Object{
-		Type: HashType,
-		Hash: newHashMap,
+		Type:     HashType,
+		Hash:     newHashMap,
+		ExpireAt: expiresAt,
 	})
 	if !loaded {
 		return nil
@@ -125,8 +133,8 @@ func (c *Cache) hSetByHash(keyHash uint64, field, value string) error {
 	return nil
 }
 
-func (c *Cache) HSet(key, field, value string) error {
-	return c.hSetByHash(hashKey64(key), field, value)
+func (c *Cache) HSet(key, field, value string, expiresAt int64) error {
+	return c.hSetByHash(hashKey64(key), field, value, expiresAt)
 }
 
 func (c *Cache) hGetByHash(keyHash uint64, field string) (string, bool, error) {
@@ -137,6 +145,10 @@ func (c *Cache) hGetByHash(keyHash uint64, field string) (string, bool, error) {
 
 	if obj.Type != HashType {
 		return "", false, fmt.Errorf("WRONGTYPE operation against a key holding wrong kind of value")
+	}
+
+	if obj.ExpireAt != 0 && obj.ExpireAt <= time.Now().Unix() {
+		return "", false, fmt.Errorf("EXPIRED key has expired")
 	}
 
 	hashMap := obj.Hash
@@ -159,6 +171,10 @@ func (c *Cache) hGetAllByHash(keyHash uint64) (map[string]string, bool, error) {
 
 	if obj.Type != HashType {
 		return nil, false, fmt.Errorf("WRONGTYPE operation against a key holding wrong kind of value")
+	}
+
+	if obj.ExpireAt != 0 && obj.ExpireAt <= time.Now().Unix() {
+		return nil, false, fmt.Errorf("EXPIRED key has expired")
 	}
 
 	all := make(map[string]string)
@@ -188,9 +204,9 @@ func (c *Cache) Delete(key string) bool {
 	return c.deleteByHash(hashKey64(key))
 }
 
-func (sc *ShardedCache) ShardSet(key, value string) {
+func (sc *ShardedCache) ShardSet(key, value string, expiresAt int64) {
 	shard, hash := sc.getShard(key)
-	shard.Cache.setByHash(hash, value)
+	shard.Cache.setByHash(hash, value, expiresAt)
 }
 
 func (sc *ShardedCache) ShardGet(key string) (string, bool, error) {
@@ -198,9 +214,9 @@ func (sc *ShardedCache) ShardGet(key string) (string, bool, error) {
 	return shard.Cache.getByHash(hash)
 }
 
-func (sc *ShardedCache) ShardHSet(key, field, value string) error {
+func (sc *ShardedCache) ShardHSet(key, field, value string, expiresAt int64) error {
 	shard, hash := sc.getShard(key)
-	return shard.Cache.hSetByHash(hash, field, value)
+	return shard.Cache.hSetByHash(hash, field, value, expiresAt)
 }
 
 func (sc *ShardedCache) ShardHGet(key, field string) (string, bool, error) {
