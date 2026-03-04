@@ -1,235 +1,168 @@
 package gocher
 
 import (
-	"fmt"
+	"sync"
 	"time"
 
-	"github.com/alphadose/haxmap"
 	"github.com/cespare/xxhash/v2"
 )
 
-type ObjectType int
-
-const ShardsCount = 16
-
-// idk if we need more types than string and hash, but we can add more later if we want, everything at the end is just bytes nothing much we care
 const (
-	StringType ObjectType = iota
-	HashType
+	segmentCount  = 16
+	bucketsPerSeg = 56
+	stashPerSeg   = 4
+	slotCapacity  = 4
 )
 
-type Object struct {
-	Type     ObjectType
-	Str      string
-	Hash     *haxmap.Map[string, string]
-	ExpireAt int64
+type entry struct {
+	key      string
+	value    []byte
+	expireAt int64
 }
 
-type Cache struct {
-	data *haxmap.Map[uint64, Object]
+type bucket struct {
+	items []entry
 }
 
-type Shard struct {
-	Cache *Cache
+type segment struct {
+	buckets [bucketsPerSeg]*bucket
+	stash   [stashPerSeg]*bucket
+	lock    sync.RWMutex
 }
 
-type ShardedCache struct {
-	shards [ShardsCount]*Shard
+type DragonCache struct {
+	segments []*segment
 }
 
-func NewShardedCache() *ShardedCache {
-	sc := &ShardedCache{}
-	for i := range sc.shards {
-		sc.shards[i] = &Shard{
-			Cache: newCacheWithSize(2048),
-		}
+func NewDragonCache() *DragonCache {
+	dc := &DragonCache{
+		segments: make([]*segment, segmentCount),
 	}
-	return sc
+	for i := 0; i < segmentCount; i++ {
+		seg := &segment{}
+		for j := 0; j < bucketsPerSeg; j++ {
+			seg.buckets[j] = &bucket{items: make([]entry, 0, slotCapacity)}
+		}
+		for j := 0; j < stashPerSeg; j++ {
+			seg.stash[j] = &bucket{items: make([]entry, 0, slotCapacity)}
+		}
+		dc.segments[i] = seg
+	}
+	return dc
 }
+
+const ShardsCount = uint32(segmentCount)
 
 func HashKey(key string) uint32 {
 	return uint32(xxhash.Sum64String(key))
 }
 
-func hashKey64(key string) uint64 {
-	return xxhash.Sum64String(key)
+func NewShardedCache() *DragonCache {
+	return NewDragonCache()
 }
 
-func (sc *ShardedCache) getShard(key string) (*Shard, uint64) {
-	hash := hashKey64(key)
-	return sc.shards[hash&(ShardsCount-1)], hash
+func hashTwo(key string) (uint64, uint64) {
+	h := xxhash.Sum64String(key)
+	return h % bucketsPerSeg, (h >> 32) % bucketsPerSeg
 }
 
-func newCacheWithSize(size uintptr) *Cache {
-	data := haxmap.New[uint64, Object](size)
-	data.SetHasher(func(key uint64) uintptr {
-		return uintptr(key)
-	})
-	return &Cache{data: data}
+func (dc *DragonCache) getSegment(key string) *segment {
+	h := xxhash.Sum64String(key)
+	idx := int(h % uint64(len(dc.segments)))
+	return dc.segments[idx]
 }
 
-func NewCache() *Cache {
-	return newCacheWithSize(32768)
+func (dc *DragonCache) Set(key string, val []byte, expires int64) {
+	seg := dc.getSegment(key)
+	idx1, idx2 := hashTwo(key)
+
+	seg.lock.Lock()
+	defer seg.lock.Unlock()
+
+	if insertOrUpdate(seg.buckets[idx1], key, val, expires) ||
+		insertOrUpdate(seg.buckets[idx2], key, val, expires) {
+		return
+	}
+	for _, s := range seg.stash {
+		if insertOrUpdate(s, key, val, expires) {
+			return
+		}
+	}
 }
 
-func (c *Cache) setByHash(keyHash uint64, value string, expiresAt int64) {
-	c.data.Set(keyHash, Object{
-		Type:     StringType,
-		Str:      value,
-		Hash:     nil,
-		ExpireAt: expiresAt,
-	})
-}
-
-func (c *Cache) Set(key, value string, expiresAt int64) {
-	c.setByHash(hashKey64(key), value, expiresAt)
-}
-
-func (c *Cache) getByHash(keyHash uint64) (string, bool, error) {
-	obj, exists := c.data.Get(keyHash)
-	if !exists {
-		return "", false, nil
+func insertOrUpdate(b *bucket, key string, val []byte, expires int64) bool {
+	for i, e := range b.items {
+		if e.key == key {
+			b.items[i] = entry{key, val, expires}
+			return true
+		}
 	}
-
-	if obj.Type != StringType {
-		return "", false, fmt.Errorf("WRONGTYPE operation against a key holding wrong kind of value")
-	}
-
-	if obj.ExpireAt != 0 && obj.ExpireAt <= time.Now().Unix() {
-		return "", false, fmt.Errorf("EXPIRED key has expired")
-	}
-
-	return obj.Str, true, nil
-}
-
-func (c *Cache) Get(key string) (string, bool, error) {
-	return c.getByHash(hashKey64(key))
-}
-
-func (c *Cache) hSetByHash(keyHash uint64, field, value string, expiresAt int64) error {
-	newHashMap := haxmap.New[string, string]()
-	newHashMap.Set(field, value)
-
-	obj, loaded := c.data.GetOrSet(keyHash, Object{
-		Type:     HashType,
-		Hash:     newHashMap,
-		ExpireAt: expiresAt,
-	})
-	if !loaded {
-		return nil
-	}
-
-	if obj.Type != HashType {
-		return fmt.Errorf("WRONGTYPE operation against a key holding wrong kind of value")
-	}
-
-	hashMap := obj.Hash
-	if hashMap == nil {
-		hashMap = haxmap.New[string, string]()
-		obj.Hash = hashMap
-		c.data.Set(keyHash, obj)
-	}
-	hashMap.Set(field, value)
-	return nil
-}
-
-func (c *Cache) HSet(key, field, value string, expiresAt int64) error {
-	return c.hSetByHash(hashKey64(key), field, value, expiresAt)
-}
-
-func (c *Cache) hGetByHash(keyHash uint64, field string) (string, bool, error) {
-	obj, exists := c.data.Get(keyHash)
-	if !exists {
-		return "", false, nil
-	}
-
-	if obj.Type != HashType {
-		return "", false, fmt.Errorf("WRONGTYPE operation against a key holding wrong kind of value")
-	}
-
-	if obj.ExpireAt != 0 && obj.ExpireAt <= time.Now().Unix() {
-		return "", false, fmt.Errorf("EXPIRED key has expired")
-	}
-
-	hashMap := obj.Hash
-	if hashMap == nil {
-		return "", false, nil
-	}
-	val, ok := hashMap.Get(field)
-	return val, ok, nil
-}
-
-func (c *Cache) HGet(key, field string) (string, bool, error) {
-	return c.hGetByHash(hashKey64(key), field)
-}
-
-func (c *Cache) hGetAllByHash(keyHash uint64) (map[string]string, bool, error) {
-	obj, exists := c.data.Get(keyHash)
-	if !exists {
-		return nil, false, nil
-	}
-
-	if obj.Type != HashType {
-		return nil, false, fmt.Errorf("WRONGTYPE operation against a key holding wrong kind of value")
-	}
-
-	if obj.ExpireAt != 0 && obj.ExpireAt <= time.Now().Unix() {
-		return nil, false, fmt.Errorf("EXPIRED key has expired")
-	}
-
-	all := make(map[string]string)
-	hashMap := obj.Hash
-	if hashMap == nil {
-		return all, true, nil
-	}
-
-	hashMap.ForEach(func(field, value string) bool {
-		all[field] = value
+	if len(b.items) < slotCapacity {
+		b.items = append(b.items, entry{key, val, expires})
 		return true
-	})
-
-	return all, true, nil
+	}
+	return false
 }
 
-func (c *Cache) HGetAll(key string) (map[string]string, bool, error) {
-	return c.hGetAllByHash(hashKey64(key))
+func (dc *DragonCache) Get(key string) ([]byte, bool, error) {
+	seg := dc.getSegment(key)
+	idx1, idx2 := hashTwo(key)
+
+	seg.lock.RLock()
+	defer seg.lock.RUnlock()
+
+	search := func(b *bucket) ([]byte, bool) {
+		for _, e := range b.items {
+			if e.key == key {
+				if e.expireAt != 0 && e.expireAt <= time.Now().Unix() {
+					return nil, false
+				}
+				return e.value, true
+			}
+		}
+		return nil, false
+	}
+
+	if val, ok := search(seg.buckets[idx1]); ok {
+		return val, true, nil
+	}
+	if val, ok := search(seg.buckets[idx2]); ok {
+		return val, true, nil
+	}
+	for _, s := range seg.stash {
+		if val, ok := search(s); ok {
+			return val, true, nil
+		}
+	}
+	return nil, false, nil
 }
 
-func (c *Cache) deleteByHash(keyHash uint64) bool {
-	_, exists := c.data.GetAndDel(keyHash)
-	return exists
+func (dc *DragonCache) Delete(key string) bool {
+	seg := dc.getSegment(key)
+	idx1, idx2 := hashTwo(key)
+
+	seg.lock.Lock()
+	defer seg.lock.Unlock()
+	removed := false
+	remove := func(b *bucket) {
+		for i, e := range b.items {
+			if e.key == key {
+				b.items[i] = b.items[len(b.items)-1]
+				b.items = b.items[:len(b.items)-1]
+				removed = true
+				return
+			}
+		}
+	}
+
+	remove(seg.buckets[idx1])
+	remove(seg.buckets[idx2])
+	for _, s := range seg.stash {
+		remove(s)
+	}
+	return removed
 }
 
-func (c *Cache) Delete(key string) bool {
-	return c.deleteByHash(hashKey64(key))
-}
-
-func (sc *ShardedCache) ShardSet(key, value string, expiresAt int64) {
-	shard, hash := sc.getShard(key)
-	shard.Cache.setByHash(hash, value, expiresAt)
-}
-
-func (sc *ShardedCache) ShardGet(key string) (string, bool, error) {
-	shard, hash := sc.getShard(key)
-	return shard.Cache.getByHash(hash)
-}
-
-func (sc *ShardedCache) ShardHSet(key, field, value string, expiresAt int64) error {
-	shard, hash := sc.getShard(key)
-	return shard.Cache.hSetByHash(hash, field, value, expiresAt)
-}
-
-func (sc *ShardedCache) ShardHGet(key, field string) (string, bool, error) {
-	shard, hash := sc.getShard(key)
-	return shard.Cache.hGetByHash(hash, field)
-}
-
-func (sc *ShardedCache) ShardHGetAll(key string) (map[string]string, bool, error) {
-	shard, hash := sc.getShard(key)
-	return shard.Cache.hGetAllByHash(hash)
-}
-
-func (sc *ShardedCache) ShardDelete(key string) bool {
-	shard, hash := sc.getShard(key)
-	return shard.Cache.deleteByHash(hash)
+func (dc *DragonCache) Close() error {
+	return nil
 }
