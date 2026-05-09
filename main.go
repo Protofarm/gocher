@@ -1,15 +1,15 @@
 package gocher
 
 import (
+	"hash/fnv"
+	"sync"
 	"sync/atomic"
 	"time"
-
-	"github.com/cespare/xxhash/v2"
 )
 
 const (
-	shardCount     = 64
 	bucketPerShard = 1024
+	defaultShards  = 16
 )
 
 type entry struct {
@@ -23,25 +23,56 @@ type bucket struct {
 }
 
 type shard struct {
-	buckets [bucketPerShard]bucket
+	data sync.Map // map[string]*bucket
 }
 
 type Cache struct {
-	shards [shardCount]shard
+	shards [defaultShards]shard
 }
 
-func NewCache() *Cache {
-	return &Cache{}
+func NewCache(keys ...string) *Cache {
+	c := &Cache{}
+	for _, key := range keys {
+		s := c.getShard(key)
+		s.data.LoadOrStore(key, &bucket{})
+	}
+	return c
 }
 
-func hashKey(key string) (uint64, uint64) {
-	h := xxhash.Sum64String(key)
-	return h % shardCount, h % bucketPerShard
+func (c *Cache) shardIndex(key string) uint32 {
+	h := fnv.New32a()
+	_, _ = h.Write([]byte(key))
+	return h.Sum32() % defaultShards
+}
+
+func (c *Cache) getShard(key string) *shard {
+	return &c.shards[c.shardIndex(key)]
+}
+
+func (c *Cache) getOrCreateBucket(key string) *bucket {
+	s := c.getShard(key)
+	if v, ok := s.data.Load(key); ok {
+		return v.(*bucket)
+	}
+	b := &bucket{}
+	actual, _ := s.data.LoadOrStore(key, b)
+	return actual.(*bucket)
+}
+
+func (c *Cache) getBucket(key string) (*bucket, bool) {
+	s := c.getShard(key)
+	v, ok := s.data.Load(key)
+	if !ok {
+		return nil, false
+	}
+	return v.(*bucket), true
 }
 
 func (c *Cache) GetWithVersion(key string) ([]byte, uint64, bool) {
-	sIdx, bIdx := hashKey(key)
-	b := &c.shards[sIdx].buckets[bIdx]
+	b, ok := c.getBucket(key)
+	if !ok {
+		return nil, 0, false
+	}
 
 	e := b.ptr.Load()
 	if e == nil {
@@ -50,6 +81,7 @@ func (c *Cache) GetWithVersion(key string) ([]byte, uint64, bool) {
 	if e.expireAt != 0 && e.expireAt <= time.Now().Unix() {
 		return nil, 0, false
 	}
+
 	return e.value, e.version, true
 }
 
@@ -59,8 +91,7 @@ func (c *Cache) Get(key string) ([]byte, bool) {
 }
 
 func (c *Cache) SetWithVersion(key string, val []byte, expected uint64, expires int64) bool {
-	sIdx, bIdx := hashKey(key)
-	b := &c.shards[sIdx].buckets[bIdx]
+	b := c.getOrCreateBucket(key)
 
 	for {
 		old := b.ptr.Load()
@@ -68,6 +99,7 @@ func (c *Cache) SetWithVersion(key string, val []byte, expected uint64, expires 
 			if expected != 0 {
 				return false
 			}
+
 			newEntry := &entry{
 				value:    val,
 				expireAt: expires,
@@ -88,37 +120,18 @@ func (c *Cache) SetWithVersion(key string, val []byte, expected uint64, expires 
 			expireAt: expires,
 			version:  old.version + 1,
 		}
-
 		if b.ptr.CompareAndSwap(old, newEntry) {
 			return true
 		}
 	}
 }
 
-func (c *Cache) DeleteWithVersion(key string, expected uint64) bool {
-	sIdx, bIdx := hashKey(key)
-	b := &c.shards[sIdx].buckets[bIdx]
-
-	for {
-		old := b.ptr.Load()
-		if old == nil {
-			return false
-		}
-		if old.version != expected {
-			return false
-		}
-		if b.ptr.CompareAndSwap(old, nil) {
-			return true
-		}
-	}
-}
-
 func (c *Cache) Set(key string, val []byte, expires int64) {
-	sIdx, bIdx := hashKey(key)
-	b := &c.shards[sIdx].buckets[bIdx]
+	b := c.getOrCreateBucket(key)
 
 	for {
 		old := b.ptr.Load()
+
 		var newVersion uint64
 		if old == nil {
 			newVersion = 1
@@ -131,24 +144,8 @@ func (c *Cache) Set(key string, val []byte, expires int64) {
 			expireAt: expires,
 			version:  newVersion,
 		}
-
 		if b.ptr.CompareAndSwap(old, newEntry) {
 			return
-		}
-	}
-}
-
-func (c *Cache) Delete(key string) bool {
-	sIdx, bIdx := hashKey(key)
-	b := &c.shards[sIdx].buckets[bIdx]
-
-	for {
-		old := b.ptr.Load()
-		if old == nil {
-			return false
-		}
-		if b.ptr.CompareAndSwap(old, nil) {
-			return true
 		}
 	}
 }
