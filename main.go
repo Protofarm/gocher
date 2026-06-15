@@ -2,6 +2,7 @@ package gocher
 
 import (
 	"hash/fnv"
+	"math/rand"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -24,6 +25,7 @@ type bucket struct {
 
 type shard struct {
 	data sync.Map // map[string]*bucket
+	keys []string
 }
 
 type Cache struct {
@@ -35,6 +37,10 @@ func NewCache(keys ...string) *Cache {
 	for _, key := range keys {
 		s := c.getShard(key)
 		s.data.LoadOrStore(key, &bucket{})
+		s.keys = append(s.keys, key)
+	}
+	for idx := range c.shards {
+		go c.activeTTLHandler(idx)
 	}
 	return c
 }
@@ -68,6 +74,10 @@ func (c *Cache) getBucket(key string) (*bucket, bool) {
 	return v.(*bucket), true
 }
 
+func validateTTL(expireAt int64) bool {
+	return expireAt != 0 && expireAt <= time.Now().Unix()
+}
+
 func (c *Cache) GetWithVersion(key string) ([]byte, uint64, bool) {
 	b, ok := c.getBucket(key)
 	if !ok {
@@ -78,7 +88,8 @@ func (c *Cache) GetWithVersion(key string) ([]byte, uint64, bool) {
 	if e == nil {
 		return nil, 0, false
 	}
-	if e.expireAt != 0 && e.expireAt <= time.Now().Unix() {
+	if validateTTL(e.expireAt) {
+		b.ptr.CompareAndSwap(e, nil)
 		return nil, 0, false
 	}
 
@@ -152,4 +163,48 @@ func (c *Cache) Set(key string, val []byte, expires int64) {
 
 func (c *Cache) Close() error {
 	return nil
+}
+
+func (c *Cache) activeTTLHandler(sIdx int) {
+	ticker := time.NewTicker(10 * time.Millisecond)
+	defer ticker.Stop()
+
+	s := &c.shards[sIdx]
+	total := len(s.keys)
+	if total == 0 {
+		return
+	}
+
+	for range ticker.C {
+		for {
+			sample := 20
+			if total < sample {
+				sample = total
+			}
+
+			expired := 0
+
+			for range sample {
+				rIdx := rand.Intn(total)
+				key := s.keys[rIdx]
+
+				b, ok := c.getBucket(key)
+				if !ok {
+					continue
+				}
+				e := b.ptr.Load()
+				if e == nil {
+					continue
+				}
+				if validateTTL(e.expireAt) {
+					b.ptr.CompareAndSwap(e, nil)
+					expired++
+				}
+			}
+
+			if expired <= sample/4 {
+				break
+			}
+		}
+	}
 }
