@@ -10,6 +10,8 @@ import (
 	"github.com/Protofarm/gocher"
 )
 
+const noEvict = ^uint64(0)
+
 func mustGet(t *testing.T, c *gocher.Cache, key string) []byte {
 	t.Helper()
 	v, ok := c.Get(key)
@@ -20,7 +22,7 @@ func mustGet(t *testing.T, c *gocher.Cache, key string) []byte {
 }
 
 func TestNewCache(t *testing.T) {
-	c := gocher.NewCache()
+	c := gocher.NewCache(0)
 	if c == nil {
 		t.Fatal("NewCache returned nil")
 	}
@@ -28,7 +30,7 @@ func TestNewCache(t *testing.T) {
 
 func TestNewCachePreallocatedKeysNotVisible(t *testing.T) {
 	keys := []string{"a", "b", "c"}
-	c := gocher.NewCache(keys...)
+	c := gocher.NewCache(noEvict, keys...)
 	for _, k := range keys {
 		_, ok := c.Get(k)
 		if ok {
@@ -38,7 +40,7 @@ func TestNewCachePreallocatedKeysNotVisible(t *testing.T) {
 }
 
 func TestNewCachePreallocatedKeyAfterSet(t *testing.T) {
-	c := gocher.NewCache("prealloc")
+	c := gocher.NewCache(noEvict, "prealloc")
 	c.Set("prealloc", []byte("val"), 0)
 	v, ok := c.Get("prealloc")
 	if !ok {
@@ -50,7 +52,7 @@ func TestNewCachePreallocatedKeyAfterSet(t *testing.T) {
 }
 
 func TestNewCachePreallocatedAndDynamicKeys(t *testing.T) {
-	c := gocher.NewCache("pre1", "pre2")
+	c := gocher.NewCache(noEvict, "pre1", "pre2")
 	c.Set("pre1", []byte("v1"), 0)
 	c.Set("pre2", []byte("v2"), 0)
 	c.Set("dynamic", []byte("v3"), 0)
@@ -69,7 +71,7 @@ func TestNewCachePreallocatedAndDynamicKeys(t *testing.T) {
 }
 
 func TestGetMissingKey(t *testing.T) {
-	c := gocher.NewCache()
+	c := gocher.NewCache(0)
 	v, ok := c.Get("missing")
 	if ok {
 		t.Error("expected ok=false for missing key")
@@ -80,7 +82,7 @@ func TestGetMissingKey(t *testing.T) {
 }
 
 func TestSetAndGet(t *testing.T) {
-	c := gocher.NewCache()
+	c := gocher.NewCache(0)
 	c.Set("key", []byte("value"), 0)
 	v, ok := c.Get("key")
 	if !ok {
@@ -92,7 +94,7 @@ func TestSetAndGet(t *testing.T) {
 }
 
 func TestSetOverwritesValue(t *testing.T) {
-	c := gocher.NewCache()
+	c := gocher.NewCache(0)
 	c.Set("key", []byte("first"), 0)
 	c.Set("key", []byte("second"), 0)
 	v := mustGet(t, c, "key")
@@ -102,7 +104,7 @@ func TestSetOverwritesValue(t *testing.T) {
 }
 
 func TestSetMultipleOverwrites(t *testing.T) {
-	c := gocher.NewCache()
+	c := gocher.NewCache(0)
 	for i := 0; i < 10; i++ {
 		c.Set("key", []byte(fmt.Sprintf("val%d", i)), 0)
 	}
@@ -113,7 +115,7 @@ func TestSetMultipleOverwrites(t *testing.T) {
 }
 
 func TestSetEmptyValue(t *testing.T) {
-	c := gocher.NewCache()
+	c := gocher.NewCache(0)
 	c.Set("key", []byte{}, 0)
 	v, ok := c.Get("key")
 	if !ok {
@@ -125,7 +127,7 @@ func TestSetEmptyValue(t *testing.T) {
 }
 
 func TestSetNilValue(t *testing.T) {
-	c := gocher.NewCache()
+	c := gocher.NewCache(0)
 	c.Set("key", nil, 0)
 	v, ok := c.Get("key")
 	if !ok {
@@ -137,7 +139,7 @@ func TestSetNilValue(t *testing.T) {
 }
 
 func TestIndependentKeys(t *testing.T) {
-	c := gocher.NewCache()
+	c := gocher.NewCache(0)
 	c.Set("a", []byte("alpha"), 0)
 	c.Set("b", []byte("beta"), 0)
 	if string(mustGet(t, c, "a")) != "alpha" {
@@ -149,7 +151,7 @@ func TestIndependentKeys(t *testing.T) {
 }
 
 func TestNeverExpiresWhenZero(t *testing.T) {
-	c := gocher.NewCache()
+	c := gocher.NewCache(0)
 	c.Set("key", []byte("val"), 0)
 	_, ok := c.Get("key")
 	if !ok {
@@ -158,7 +160,7 @@ func TestNeverExpiresWhenZero(t *testing.T) {
 }
 
 func TestFutureExpiry(t *testing.T) {
-	c := gocher.NewCache()
+	c := gocher.NewCache(0)
 	future := time.Now().Add(10 * time.Second).Unix()
 	c.Set("key", []byte("val"), future)
 	_, ok := c.Get("key")
@@ -168,7 +170,7 @@ func TestFutureExpiry(t *testing.T) {
 }
 
 func TestPastExpiry(t *testing.T) {
-	c := gocher.NewCache()
+	c := gocher.NewCache(0)
 	past := time.Now().Add(-1 * time.Second).Unix()
 	c.Set("key", []byte("val"), past)
 	_, ok := c.Get("key")
@@ -178,7 +180,7 @@ func TestPastExpiry(t *testing.T) {
 }
 
 func TestExpiredReturnsNilAndFalse(t *testing.T) {
-	c := gocher.NewCache()
+	c := gocher.NewCache(0)
 	past := time.Now().Add(-1 * time.Second).Unix()
 	c.Set("key", []byte("val"), past)
 	v, ok := c.Get("key")
@@ -188,8 +190,7 @@ func TestExpiredReturnsNilAndFalse(t *testing.T) {
 }
 
 func TestExpiryAtNow(t *testing.T) {
-	c := gocher.NewCache()
-
+	c := gocher.NewCache(0)
 	now := time.Now().Unix()
 	c.Set("key", []byte("val"), now)
 	time.Sleep(time.Millisecond)
@@ -200,7 +201,7 @@ func TestExpiryAtNow(t *testing.T) {
 }
 
 func TestSetOverwriteResetsExpiry(t *testing.T) {
-	c := gocher.NewCache()
+	c := gocher.NewCache(0)
 	past := time.Now().Add(-1 * time.Second).Unix()
 	c.Set("key", []byte("old"), past)
 
@@ -215,7 +216,7 @@ func TestSetOverwriteResetsExpiry(t *testing.T) {
 }
 
 func TestSetExtendsTTL(t *testing.T) {
-	c := gocher.NewCache()
+	c := gocher.NewCache(0)
 	near := time.Now().Add(1 * time.Second).Unix()
 	c.Set("key", []byte("v1"), near)
 
@@ -232,7 +233,7 @@ func TestSetExtendsTTL(t *testing.T) {
 }
 
 func TestGetWithVersionMissingKey(t *testing.T) {
-	c := gocher.NewCache()
+	c := gocher.NewCache(0)
 	v, ver, ok := c.GetWithVersion("missing")
 	if ok || v != nil || ver != 0 {
 		t.Errorf("missing key: got (%v, %d, %v), want (nil, 0, false)", v, ver, ok)
@@ -240,7 +241,7 @@ func TestGetWithVersionMissingKey(t *testing.T) {
 }
 
 func TestGetWithVersionPreallocatedNoSet(t *testing.T) {
-	c := gocher.NewCache("key")
+	c := gocher.NewCache(noEvict, "key")
 	_, ver, ok := c.GetWithVersion("key")
 	if ok {
 		t.Error("pre-allocated key without Set should not be found")
@@ -251,7 +252,7 @@ func TestGetWithVersionPreallocatedNoSet(t *testing.T) {
 }
 
 func TestFirstSetCreatesVersion1(t *testing.T) {
-	c := gocher.NewCache()
+	c := gocher.NewCache(0)
 	c.Set("key", []byte("v"), 0)
 	_, ver, ok := c.GetWithVersion("key")
 	if !ok {
@@ -263,7 +264,7 @@ func TestFirstSetCreatesVersion1(t *testing.T) {
 }
 
 func TestVersionIncrementsOnEachSet(t *testing.T) {
-	c := gocher.NewCache()
+	c := gocher.NewCache(0)
 	for i := uint64(1); i <= 10; i++ {
 		c.Set("key", []byte("v"), 0)
 		_, ver, ok := c.GetWithVersion("key")
@@ -277,7 +278,7 @@ func TestVersionIncrementsOnEachSet(t *testing.T) {
 }
 
 func TestGetWithVersionExpiredKey(t *testing.T) {
-	c := gocher.NewCache()
+	c := gocher.NewCache(0)
 	past := time.Now().Add(-1 * time.Second).Unix()
 	c.Set("key", []byte("v"), past)
 	_, ver, ok := c.GetWithVersion("key")
@@ -290,7 +291,7 @@ func TestGetWithVersionExpiredKey(t *testing.T) {
 }
 
 func TestSetWithVersionNewKeyExpectedZero(t *testing.T) {
-	c := gocher.NewCache()
+	c := gocher.NewCache(0)
 	ok := c.SetWithVersion("key", []byte("val"), 0, 0)
 	if !ok {
 		t.Fatal("SetWithVersion(expected=0) on new key should succeed")
@@ -305,7 +306,7 @@ func TestSetWithVersionNewKeyExpectedZero(t *testing.T) {
 }
 
 func TestSetWithVersionNewKeyWrongExpected(t *testing.T) {
-	c := gocher.NewCache()
+	c := gocher.NewCache(0)
 	ok := c.SetWithVersion("key", []byte("val"), 1, 0)
 	if ok {
 		t.Error("SetWithVersion(expected=1) on new key should fail")
@@ -317,7 +318,7 @@ func TestSetWithVersionNewKeyWrongExpected(t *testing.T) {
 }
 
 func TestSetWithVersionCorrectVersion(t *testing.T) {
-	c := gocher.NewCache()
+	c := gocher.NewCache(0)
 	c.Set("key", []byte("v1"), 0)
 	_, ver, _ := c.GetWithVersion("key")
 
@@ -338,7 +339,7 @@ func TestSetWithVersionCorrectVersion(t *testing.T) {
 }
 
 func TestSetWithVersionWrongVersion(t *testing.T) {
-	c := gocher.NewCache()
+	c := gocher.NewCache(0)
 	c.Set("key", []byte("v1"), 0)
 
 	ok := c.SetWithVersion("key", []byte("v2"), 99, 0)
@@ -352,7 +353,7 @@ func TestSetWithVersionWrongVersion(t *testing.T) {
 }
 
 func TestSetWithVersionChain(t *testing.T) {
-	c := gocher.NewCache()
+	c := gocher.NewCache(0)
 
 	if !c.SetWithVersion("key", []byte("v1"), 0, 0) {
 		t.Fatal("step 1 failed")
@@ -377,7 +378,7 @@ func TestSetWithVersionChain(t *testing.T) {
 }
 
 func TestSetWithVersionDoesNotModifyValueOnFailure(t *testing.T) {
-	c := gocher.NewCache()
+	c := gocher.NewCache(0)
 	c.Set("key", []byte("original"), 0)
 	c.SetWithVersion("key", []byte("modified"), 99, 0)
 	v := mustGet(t, c, "key")
@@ -387,7 +388,7 @@ func TestSetWithVersionDoesNotModifyValueOnFailure(t *testing.T) {
 }
 
 func TestSetWithVersionWithExpiry(t *testing.T) {
-	c := gocher.NewCache()
+	c := gocher.NewCache(0)
 	future := time.Now().Add(10 * time.Second).Unix()
 	ok := c.SetWithVersion("key", []byte("val"), 0, future)
 	if !ok {
@@ -400,7 +401,7 @@ func TestSetWithVersionWithExpiry(t *testing.T) {
 }
 
 func TestSetWithVersionExpiresEntry(t *testing.T) {
-	c := gocher.NewCache()
+	c := gocher.NewCache(0)
 	past := time.Now().Add(-1 * time.Second).Unix()
 	ok := c.SetWithVersion("key", []byte("val"), 0, past)
 	if !ok {
@@ -413,7 +414,7 @@ func TestSetWithVersionExpiresEntry(t *testing.T) {
 }
 
 func TestSetWithVersionChecksVersionEvenForExpired(t *testing.T) {
-	c := gocher.NewCache()
+	c := gocher.NewCache(0)
 	past := time.Now().Add(-1 * time.Second).Unix()
 	c.Set("key", []byte("v1"), past)
 
@@ -429,14 +430,14 @@ func TestSetWithVersionChecksVersionEvenForExpired(t *testing.T) {
 }
 
 func TestCloseReturnsNil(t *testing.T) {
-	c := gocher.NewCache()
+	c := gocher.NewCache(0)
 	if err := c.Close(); err != nil {
 		t.Errorf("Close should return nil error, got %v", err)
 	}
 }
 
 func TestCloseMultipleTimes(t *testing.T) {
-	c := gocher.NewCache()
+	c := gocher.NewCache(0)
 	for i := 0; i < 5; i++ {
 		if err := c.Close(); err != nil {
 			t.Errorf("Close #%d returned error: %v", i+1, err)
@@ -445,7 +446,7 @@ func TestCloseMultipleTimes(t *testing.T) {
 }
 
 func TestCacheUsableAfterClose(t *testing.T) {
-	c := gocher.NewCache()
+	c := gocher.NewCache(0)
 	_ = c.Close()
 	c.Set("key", []byte("val"), 0)
 	v, ok := c.Get("key")
@@ -458,7 +459,7 @@ func TestCacheUsableAfterClose(t *testing.T) {
 }
 
 func TestEmptyStringKey(t *testing.T) {
-	c := gocher.NewCache()
+	c := gocher.NewCache(0)
 	c.Set("", []byte("empty-key-val"), 0)
 	v, ok := c.Get("")
 	if !ok {
@@ -470,7 +471,7 @@ func TestEmptyStringKey(t *testing.T) {
 }
 
 func TestLargeValue(t *testing.T) {
-	c := gocher.NewCache()
+	c := gocher.NewCache(0)
 	large := make([]byte, 1<<20)
 	for i := range large {
 		large[i] = byte(i % 251)
@@ -492,7 +493,7 @@ func TestLargeValue(t *testing.T) {
 }
 
 func TestVeryLongKey(t *testing.T) {
-	c := gocher.NewCache()
+	c := gocher.NewCache(0)
 	key := string(make([]byte, 10000))
 	c.Set(key, []byte("val"), 0)
 	v, ok := c.Get(key)
@@ -505,7 +506,7 @@ func TestVeryLongKey(t *testing.T) {
 }
 
 func TestSpecialCharactersInKey(t *testing.T) {
-	c := gocher.NewCache()
+	c := gocher.NewCache(0)
 	keys := []string{
 		"key with spaces",
 		"key\twith\ttabs",
@@ -530,7 +531,7 @@ func TestSpecialCharactersInKey(t *testing.T) {
 }
 
 func TestManyDistinctKeys(t *testing.T) {
-	c := gocher.NewCache()
+	c := gocher.NewCache(0)
 	const n = 10000
 	for i := 0; i < n; i++ {
 		c.Set(fmt.Sprintf("key-%d", i), []byte(fmt.Sprintf("val-%d", i)), 0)
@@ -550,7 +551,7 @@ func TestManyDistinctKeys(t *testing.T) {
 }
 
 func TestBinaryValue(t *testing.T) {
-	c := gocher.NewCache()
+	c := gocher.NewCache(0)
 	val := []byte{0x00, 0xFF, 0x01, 0xFE, 0x80, 0x7F}
 	c.Set("bin", val, 0)
 	v := mustGet(t, c, "bin")
@@ -565,7 +566,7 @@ func TestBinaryValue(t *testing.T) {
 }
 
 func TestAllShardsReachable(t *testing.T) {
-	c := gocher.NewCache()
+	c := gocher.NewCache(0)
 	const n = 160
 	for i := 0; i < n; i++ {
 		c.Set(fmt.Sprintf("shard-test-%d", i), []byte("v"), 0)
@@ -582,7 +583,7 @@ func TestAllShardsReachable(t *testing.T) {
 }
 
 func TestRaceSameKey(t *testing.T) {
-	c := gocher.NewCache()
+	c := gocher.NewCache(0)
 	const goroutines = 100
 	const iters = 100
 	var wg sync.WaitGroup
@@ -600,7 +601,7 @@ func TestRaceSameKey(t *testing.T) {
 }
 
 func TestRaceDifferentKeys(t *testing.T) {
-	c := gocher.NewCache()
+	c := gocher.NewCache(0)
 	const goroutines = 50
 	var wg sync.WaitGroup
 	for g := 0; g < goroutines; g++ {
@@ -620,7 +621,7 @@ func TestRaceDifferentKeys(t *testing.T) {
 }
 
 func TestRaceConcurrentSetWithVersion(t *testing.T) {
-	c := gocher.NewCache()
+	c := gocher.NewCache(0)
 	const goroutines = 100
 	var wins atomic.Int64
 	var wg sync.WaitGroup
@@ -640,7 +641,7 @@ func TestRaceConcurrentSetWithVersion(t *testing.T) {
 }
 
 func TestRaceConcurrentGetWithVersion(t *testing.T) {
-	c := gocher.NewCache()
+	c := gocher.NewCache(0)
 	c.Set("key", []byte("initial"), 0)
 	const goroutines = 100
 	var wg sync.WaitGroup
@@ -658,7 +659,7 @@ func TestRaceConcurrentGetWithVersion(t *testing.T) {
 }
 
 func TestRaceMixedOperations(t *testing.T) {
-	c := gocher.NewCache()
+	c := gocher.NewCache(0)
 	keys := []string{"a", "b", "c", "d", "e"}
 	c.Set(keys[0], []byte("init"), 0)
 
@@ -688,7 +689,7 @@ func TestRaceMixedOperations(t *testing.T) {
 }
 
 func TestRaceConcurrentExpiry(t *testing.T) {
-	c := gocher.NewCache()
+	c := gocher.NewCache(0)
 	future := time.Now().Add(10 * time.Second).Unix()
 	past := time.Now().Add(-10 * time.Second).Unix()
 
@@ -710,12 +711,12 @@ func TestRaceConcurrentExpiry(t *testing.T) {
 }
 
 func TestGetClearsExpiredEntryPtr(t *testing.T) {
-	c := gocher.NewCache()
+	c := gocher.NewCache(0)
 	past := time.Now().Add(-1 * time.Second).Unix()
 	c.Set("key", []byte("v1"), past)
 
 	if c.SetWithVersion("key", []byte("x"), 0, 0) {
-		t.Fatal("SetWithVersion(expected=0) must fail while expired entry still has version=1")
+		t.Fatal("SetWithVersion(expected=0) must fail while expired entry has version=1")
 	}
 
 	if _, ok := c.Get("key"); ok {
@@ -735,7 +736,7 @@ func TestGetClearsExpiredEntryPtr(t *testing.T) {
 }
 
 func TestGetWithVersionClearsExpiredEntryPtr(t *testing.T) {
-	c := gocher.NewCache()
+	c := gocher.NewCache(0)
 	past := time.Now().Add(-1 * time.Second).Unix()
 	c.Set("key", []byte("v1"), past)
 
@@ -749,8 +750,7 @@ func TestGetWithVersionClearsExpiredEntryPtr(t *testing.T) {
 }
 
 func TestGetAfterClearReturnsNotFound(t *testing.T) {
-
-	c := gocher.NewCache()
+	c := gocher.NewCache(0)
 	past := time.Now().Add(-1 * time.Second).Unix()
 	c.Set("key", []byte("v"), past)
 
@@ -762,12 +762,10 @@ func TestGetAfterClearReturnsNotFound(t *testing.T) {
 }
 
 func TestGetExpiredThenSetCreatesVersion1(t *testing.T) {
-
-	c := gocher.NewCache()
+	c := gocher.NewCache(0)
 	past := time.Now().Add(-1 * time.Second).Unix()
 	c.Set("key", []byte("v1"), past)
 	c.Get("key")
-
 	c.Set("key", []byte("v2"), 0)
 	_, ver, ok := c.GetWithVersion("key")
 	if !ok {
@@ -779,8 +777,7 @@ func TestGetExpiredThenSetCreatesVersion1(t *testing.T) {
 }
 
 func TestGetExpiredClearsOnlyMatchingEntry(t *testing.T) {
-
-	c := gocher.NewCache()
+	c := gocher.NewCache(0)
 	past := time.Now().Add(-1 * time.Second).Unix()
 	c.Set("key", []byte("expired"), past)
 
@@ -796,7 +793,7 @@ func TestGetExpiredClearsOnlyMatchingEntry(t *testing.T) {
 }
 
 func TestActiveTTLClearsPreallocatedExpiredKey(t *testing.T) {
-	c := gocher.NewCache("active-ttl-key")
+	c := gocher.NewCache(noEvict, "active-ttl-key")
 	past := time.Now().Add(-1 * time.Second).Unix()
 	c.Set("active-ttl-key", []byte("v"), past)
 
@@ -808,8 +805,7 @@ func TestActiveTTLClearsPreallocatedExpiredKey(t *testing.T) {
 }
 
 func TestActiveTTLDoesNotAffectDynamicKeys(t *testing.T) {
-
-	c := gocher.NewCache()
+	c := gocher.NewCache(0)
 	past := time.Now().Add(-1 * time.Second).Unix()
 	c.Set("dynamic", []byte("v"), past)
 
@@ -824,7 +820,7 @@ func TestActiveTTLDoesNotAffectDynamicKeys(t *testing.T) {
 }
 
 func TestActiveTTLPreservesValidPreallocatedKey(t *testing.T) {
-	c := gocher.NewCache("valid-key")
+	c := gocher.NewCache(noEvict, "valid-key")
 	future := time.Now().Add(100 * time.Second).Unix()
 	c.Set("valid-key", []byte("alive"), future)
 
@@ -840,7 +836,7 @@ func TestActiveTTLPreservesValidPreallocatedKey(t *testing.T) {
 }
 
 func TestActiveTTLMixedExpiryPreallocatedKeys(t *testing.T) {
-	c := gocher.NewCache("ttl-expired", "ttl-valid")
+	c := gocher.NewCache(noEvict, "ttl-expired", "ttl-valid")
 	past := time.Now().Add(-1 * time.Second).Unix()
 	future := time.Now().Add(100 * time.Second).Unix()
 	c.Set("ttl-expired", []byte("old"), past)
@@ -861,7 +857,7 @@ func TestActiveTTLMultipleExpiredPreallocatedKeys(t *testing.T) {
 	for i := range keys {
 		keys[i] = fmt.Sprintf("ttl-multi-%d", i)
 	}
-	c := gocher.NewCache(keys...)
+	c := gocher.NewCache(noEvict, keys...)
 	past := time.Now().Add(-1 * time.Second).Unix()
 	for _, k := range keys {
 		c.Set(k, []byte("v"), past)
@@ -881,7 +877,7 @@ func TestActiveTTLMultipleExpiredPreallocatedKeys(t *testing.T) {
 }
 
 func TestActiveTTLNoHandlerOnEmptyCache(t *testing.T) {
-	c := gocher.NewCache()
+	c := gocher.NewCache(0)
 	time.Sleep(30 * time.Millisecond)
 
 	c.Set("key", []byte("v"), 0)
@@ -892,7 +888,7 @@ func TestActiveTTLNoHandlerOnEmptyCache(t *testing.T) {
 }
 
 func TestRaceActiveTTLAndConcurrentSet(t *testing.T) {
-	c := gocher.NewCache("race-ttl-key")
+	c := gocher.NewCache(noEvict, "race-ttl-key")
 	past := time.Now().Add(-1 * time.Second).Unix()
 	c.Set("race-ttl-key", []byte("initial"), past)
 
@@ -912,8 +908,74 @@ func TestRaceActiveTTLAndConcurrentSet(t *testing.T) {
 	}
 }
 
+func TestLRUEvictsPreallocatedKeyWhenOverLimit(t *testing.T) {
+	c := gocher.NewCache(1, "evict-key")
+	c.Set("evict-key", []byte("hi"), 0)
+
+	_, ok := c.Get("evict-key")
+	if ok {
+		t.Error("pre-allocated key must be evicted when currBytes > maxBytes")
+	}
+}
+
+func TestLRUDoesNotEvictDynamicKeys(t *testing.T) {
+	c := gocher.NewCache(0)
+	c.Set("dynamic", []byte("hi"), 0)
+
+	_, ok := c.Get("dynamic")
+	if !ok {
+		t.Error("dynamic keys must not be evicted by LRU (not tracked in s.keys)")
+	}
+}
+
+func TestLRUNoEvictionUnderLimit(t *testing.T) {
+	c := gocher.NewCache(1000, "key")
+	c.Set("key", []byte("hello"), 0)
+	v, ok := c.Get("key")
+	if !ok || string(v) != "hello" {
+		t.Errorf("key under byte limit must not be evicted: ok=%v v=%q", ok, string(v))
+	}
+}
+
+func TestLRUEvictionViaSetWithVersion(t *testing.T) {
+	c := gocher.NewCache(1, "key")
+	if !c.SetWithVersion("key", []byte("hi"), 0, 0) {
+		t.Fatal("SetWithVersion must succeed")
+	}
+
+	_, found := c.Get("key")
+	if found {
+		t.Error("key must be evicted after SetWithVersion exceeds maxBytes")
+	}
+}
+
+func TestLRUEvictsAtLeastOneKeyWhenOverLimit(t *testing.T) {
+	c := gocher.NewCache(3, "lru-a", "lru-b")
+	c.Set("lru-a", []byte("AA"), 0)
+	c.Set("lru-b", []byte("BB"), 0)
+	aFound := func() bool { _, ok := c.Get("lru-a"); return ok }()
+	bFound := func() bool { _, ok := c.Get("lru-b"); return ok }()
+	if aFound && bFound {
+		t.Error("at least one pre-allocated key must be evicted when currBytes > maxBytes")
+	}
+}
+
+func TestLRURaceEvictionAndConcurrentSets(t *testing.T) {
+	c := gocher.NewCache(10, "race-lru-key")
+	var wg sync.WaitGroup
+	for g := 0; g < 50; g++ {
+		wg.Add(1)
+		go func(id int) {
+			defer wg.Done()
+			c.Set("race-lru-key", []byte(fmt.Sprintf("v%d", id)), 0)
+			c.Get("race-lru-key")
+		}(g)
+	}
+	wg.Wait()
+}
+
 func BenchmarkSet(b *testing.B) {
-	c := gocher.NewCache()
+	c := gocher.NewCache(0)
 	val := []byte("benchmark-value")
 	b.ResetTimer()
 	for i := 0; i < b.N; i++ {
@@ -922,7 +984,7 @@ func BenchmarkSet(b *testing.B) {
 }
 
 func BenchmarkGet(b *testing.B) {
-	c := gocher.NewCache()
+	c := gocher.NewCache(0)
 	c.Set("bench-key", []byte("benchmark-value"), 0)
 	b.ResetTimer()
 	for i := 0; i < b.N; i++ {
@@ -931,7 +993,7 @@ func BenchmarkGet(b *testing.B) {
 }
 
 func BenchmarkSetGet(b *testing.B) {
-	c := gocher.NewCache()
+	c := gocher.NewCache(0)
 	val := []byte("benchmark-value")
 	b.ResetTimer()
 	for i := 0; i < b.N; i++ {
@@ -941,7 +1003,7 @@ func BenchmarkSetGet(b *testing.B) {
 }
 
 func BenchmarkGetWithVersion(b *testing.B) {
-	c := gocher.NewCache()
+	c := gocher.NewCache(0)
 	c.Set("bench-key", []byte("benchmark-value"), 0)
 	b.ResetTimer()
 	for i := 0; i < b.N; i++ {
@@ -950,7 +1012,7 @@ func BenchmarkGetWithVersion(b *testing.B) {
 }
 
 func BenchmarkSetWithVersion(b *testing.B) {
-	c := gocher.NewCache()
+	c := gocher.NewCache(0)
 	c.Set("bench-key", []byte("initial"), 0)
 	b.ResetTimer()
 	for i := 0; i < b.N; i++ {
@@ -960,7 +1022,7 @@ func BenchmarkSetWithVersion(b *testing.B) {
 }
 
 func BenchmarkPreallocatedSet(b *testing.B) {
-	c := gocher.NewCache("bench-key")
+	c := gocher.NewCache(noEvict, "bench-key")
 	val := []byte("benchmark-value")
 	b.ResetTimer()
 	for i := 0; i < b.N; i++ {
@@ -969,7 +1031,7 @@ func BenchmarkPreallocatedSet(b *testing.B) {
 }
 
 func BenchmarkConcurrentGet(b *testing.B) {
-	c := gocher.NewCache()
+	c := gocher.NewCache(0)
 	c.Set("bench-key", []byte("benchmark-value"), 0)
 	b.ResetTimer()
 	b.RunParallel(func(pb *testing.PB) {
@@ -980,7 +1042,7 @@ func BenchmarkConcurrentGet(b *testing.B) {
 }
 
 func BenchmarkConcurrentSet(b *testing.B) {
-	c := gocher.NewCache()
+	c := gocher.NewCache(0)
 	val := []byte("benchmark-value")
 	b.ResetTimer()
 	b.RunParallel(func(pb *testing.PB) {
@@ -991,7 +1053,7 @@ func BenchmarkConcurrentSet(b *testing.B) {
 }
 
 func BenchmarkConcurrentMixedKeys(b *testing.B) {
-	c := gocher.NewCache()
+	c := gocher.NewCache(0)
 	val := []byte("v")
 	keys := make([]string, 1000)
 	for i := range keys {
@@ -1009,7 +1071,7 @@ func BenchmarkConcurrentMixedKeys(b *testing.B) {
 }
 
 func BenchmarkConcurrentSetWithVersion(b *testing.B) {
-	c := gocher.NewCache()
+	c := gocher.NewCache(0)
 	c.Set("bench-key", []byte("initial"), 0)
 	b.ResetTimer()
 	b.RunParallel(func(pb *testing.PB) {
@@ -1023,7 +1085,7 @@ func BenchmarkConcurrentSetWithVersion(b *testing.B) {
 }
 
 func BenchmarkManyKeys(b *testing.B) {
-	c := gocher.NewCache()
+	c := gocher.NewCache(0)
 	val := []byte("v")
 	b.ResetTimer()
 	for i := 0; i < b.N; i++ {

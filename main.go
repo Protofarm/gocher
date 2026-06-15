@@ -20,7 +20,9 @@ type entry struct {
 }
 
 type bucket struct {
-	ptr atomic.Pointer[entry]
+	ptr        atomic.Pointer[entry]
+	accessedAt atomic.Int64
+	state      atomic.Uint64 // 0 = uncached (empty), 1 = inbound, 2 = main
 }
 
 type shard struct {
@@ -29,11 +31,13 @@ type shard struct {
 }
 
 type Cache struct {
-	shards [defaultShards]shard
+	shards    [defaultShards]shard
+	currBytes atomic.Uint64
+	maxBytes  uint64
 }
 
-func NewCache(keys ...string) *Cache {
-	c := &Cache{}
+func NewCache(maxBytes uint64, keys ...string) *Cache {
+	c := &Cache{maxBytes: maxBytes}
 	for _, key := range keys {
 		s := c.getShard(key)
 		s.data.LoadOrStore(key, &bucket{})
@@ -61,6 +65,8 @@ func (c *Cache) getOrCreateBucket(key string) *bucket {
 		return v.(*bucket)
 	}
 	b := &bucket{}
+	b.accessedAt.Store(time.Now().Unix())
+	b.state.Store(0)
 	actual, _ := s.data.LoadOrStore(key, b)
 	return actual.(*bucket)
 }
@@ -89,9 +95,15 @@ func (c *Cache) GetWithVersion(key string) ([]byte, uint64, bool) {
 		return nil, 0, false
 	}
 	if validateTTL(e.expireAt) {
-		b.ptr.CompareAndSwap(e, nil)
+		if b.ptr.CompareAndSwap(e, nil) {
+			c.currBytes.Add(-uint64(len(e.value)))
+			b.state.Store(0)
+		}
 		return nil, 0, false
 	}
+
+	b.accessedAt.Store(time.Now().Unix())
+	b.state.CompareAndSwap(1, 2)
 
 	return e.value, e.version, true
 }
@@ -102,6 +114,7 @@ func (c *Cache) Get(key string) ([]byte, bool) {
 }
 
 func (c *Cache) SetWithVersion(key string, val []byte, expected uint64, expires int64) bool {
+	sIdx := c.shardIndex(key)
 	b := c.getOrCreateBucket(key)
 
 	for {
@@ -116,7 +129,14 @@ func (c *Cache) SetWithVersion(key string, val []byte, expected uint64, expires 
 				expireAt: expires,
 				version:  1,
 			}
+
+			b.state.Store(1)
+			b.accessedAt.Store(time.Now().Unix())
 			if b.ptr.CompareAndSwap(nil, newEntry) {
+				c.currBytes.Add(uint64(len(val)))
+				if c.currBytes.Load() > c.maxBytes {
+					c.lruEvictionHandler(int(sIdx))
+				}
 				return true
 			}
 			continue
@@ -131,13 +151,20 @@ func (c *Cache) SetWithVersion(key string, val []byte, expected uint64, expires 
 			expireAt: expires,
 			version:  old.version + 1,
 		}
+
+		b.accessedAt.Store(time.Now().Unix())
 		if b.ptr.CompareAndSwap(old, newEntry) {
+			c.currBytes.Add(uint64(len(val) - len(old.value)))
+			if c.currBytes.Load() > c.maxBytes {
+				c.lruEvictionHandler(int(sIdx))
+			}
 			return true
 		}
 	}
 }
 
 func (c *Cache) Set(key string, val []byte, expires int64) {
+	sIdx := c.shardIndex(key)
 	b := c.getOrCreateBucket(key)
 
 	for {
@@ -146,6 +173,7 @@ func (c *Cache) Set(key string, val []byte, expires int64) {
 		var newVersion uint64
 		if old == nil {
 			newVersion = 1
+			b.state.Store(1)
 		} else {
 			newVersion = old.version + 1
 		}
@@ -155,7 +183,17 @@ func (c *Cache) Set(key string, val []byte, expires int64) {
 			expireAt: expires,
 			version:  newVersion,
 		}
+
+		b.accessedAt.Store(time.Now().Unix())
 		if b.ptr.CompareAndSwap(old, newEntry) {
+			delta := uint64(len(val))
+			if old != nil {
+				delta -= uint64(len(old.value))
+			}
+			c.currBytes.Add(delta)
+			if c.currBytes.Load() > c.maxBytes {
+				c.lruEvictionHandler(int(sIdx))
+			}
 			return
 		}
 	}
@@ -197,13 +235,86 @@ func (c *Cache) activeTTLHandler(sIdx int) {
 					continue
 				}
 				if validateTTL(e.expireAt) {
-					b.ptr.CompareAndSwap(e, nil)
+					if b.ptr.CompareAndSwap(e, nil) {
+						c.currBytes.Add(-uint64(len(e.value)))
+						b.state.Store(0)
+					}
 					expired++
 				}
 			}
 
 			if expired <= sample/4 {
 				break
+			}
+		}
+	}
+}
+func (c *Cache) lruEvictionHandler(sIdx int) {
+	s := &c.shards[sIdx]
+	total := len(s.keys)
+	if total == 0 {
+		return
+	}
+
+	sampleSize := 20
+	if total < sampleSize {
+		sampleSize = total
+	}
+
+	var oldestInb *bucket
+	var oldestMain *bucket
+
+	var oldestInbAge int64 = 1<<63 - 1
+	var oldestMainAge int64 = 1<<63 - 1
+	inboundCount := 0
+
+	for i := 0; i < sampleSize; i++ {
+		rIdx := rand.Intn(total)
+		key := s.keys[rIdx]
+
+		b, ok := c.getBucket(key)
+		if !ok {
+			continue
+		}
+
+		state := b.state.Load()
+		accessedAt := b.accessedAt.Load()
+
+		switch state {
+		case 1:
+			inboundCount++
+			if accessedAt < oldestInbAge {
+				oldestInbAge = accessedAt
+				oldestInb = b
+			}
+		case 2:
+			if accessedAt < oldestMainAge {
+				oldestMainAge = accessedAt
+				oldestMain = b
+			}
+		}
+	}
+
+	var targetBucket *bucket
+	if inboundCount > sampleSize/4 {
+		targetBucket = oldestInb
+	} else {
+		targetBucket = oldestMain
+	}
+
+	if targetBucket == nil {
+		if oldestInb != nil {
+			targetBucket = oldestInb
+		} else {
+			targetBucket = oldestMain
+		}
+	}
+
+	if targetBucket != nil {
+		oldEntry := targetBucket.ptr.Load()
+		if oldEntry != nil {
+			if targetBucket.ptr.CompareAndSwap(oldEntry, nil) {
+				targetBucket.state.Store(0)
 			}
 		}
 	}
